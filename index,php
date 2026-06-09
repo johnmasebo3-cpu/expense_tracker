@@ -1,0 +1,245 @@
+<?php
+require 'db.php';
+session_start();
+
+// Redirect back to login if session profile details are absent
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit;
+}
+
+$user_id = $_SESSION['user_id'];
+
+// --- FORM PROCESSING LOGIC (CRUD operations) ---
+
+// 1. Check for incoming Income forms
+if (isset($_POST['add_income'])) {
+    $source = $conn->real_escape_string($_POST['source']);
+    $amount = floatval($_POST['amount']);
+    $date = $_POST['date'];
+    $conn->query("INSERT INTO income (user_id, source, amount, date) VALUES ('$user_id', '$source', '$amount', '$date')");
+    header("Location: index.php");
+}
+
+// 2. Check for incoming Expense forms
+if (isset($_POST['add_expense'])) {
+    $title = $conn->real_escape_string($_POST['title']);
+    $category = $_POST['category'];
+    $amount = floatval($_POST['amount']);
+    $date = $_POST['date'];
+    $conn->query("INSERT INTO expenses (user_id, title, category, amount, date) VALUES ('$user_id', '$title', '$category', '$amount', '$date')");
+    header("Location: index.php");
+}
+
+// 3. Process Delete triggers on historical expense logs
+if (isset($_GET['delete_expense'])) {
+    $id = intval($_GET['delete_expense']);
+    $conn->query("DELETE FROM expenses WHERE id=$id AND user_id=$user_id");
+    header("Location: index.php");
+}
+
+// --- DYNAMIC DATES REPORT SCOPE HANDLER ---
+$filter_query = "";
+$filter_type = isset($_GET['report_filter']) ? $_GET['report_filter'] : 'all';
+
+if ($filter_type == 'daily') {
+    $filter_query = " AND date = CURDATE()";
+} elseif ($filter_type == 'weekly') {
+    $filter_query = " AND date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)";
+} elseif ($filter_type == 'monthly') {
+    $filter_query = " AND MONTH(date) = MONTH(CURDATE()) AND YEAR(date) = YEAR(CURDATE())";
+}
+
+// --- CALCULATION LOGIC CALCULATIONS ---
+// Get Total Income metrics
+$income_res = $conn->query("SELECT SUM(amount) AS total FROM income WHERE user_id=$user_id" . $filter_query);
+$total_income = floatval($income_res->fetch_assoc()['total']);
+
+// Get Total Expense metrics
+$expense_res = $conn->query("SELECT SUM(amount) AS total FROM expenses WHERE user_id=$user_id" . $filter_query);
+$total_expenses = floatval($expense_res->fetch_assoc()['total']);
+
+// Final remaining balance calculation formula
+$remaining_balance = $total_income - $total_expenses;
+
+// --- CHART GENERATION COMPILATIONS ---
+// Group data sets by category labels for the Pie Chart configuration
+$cat_data = [];
+$cat_res = $conn->query("SELECT category, SUM(amount) as total FROM expenses WHERE user_id=$user_id GROUP BY category");
+while($row = $cat_res->fetch_assoc()) {
+    $cat_data[] = array("label" => $row['category'], "y" => floatval($row['total']));
+}
+
+// Extract trends based on dates for the Line Graph compilation
+$trend_data = [];
+$trend_res = $conn->query("SELECT date, SUM(amount) as total FROM expenses WHERE user_id=$user_id GROUP BY date ORDER BY date ASC LIMIT 10");
+while($row = $trend_res->fetch_assoc()) {
+    $trend_data[] = array("label" => $row['date'], "y" => floatval($row['total']));
+}
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dashboard - Personal Expense Tracker</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.canvasjs.com/canvasjs.min.js"></script>
+    <script>
+    window.onload = function () {
+        // Initialize dynamic Pie Chart configuration
+        var pieChart = new CanvasJS.Chart("pieChartContainer", {
+            animationEnabled: true,
+            title: { text: "Spending By Category" },
+            data: [{
+                type: "pie",
+                yValueFormatString: "TZS #,##0.00",
+                indexLabel: "{label} ({y})",
+                dataPoints: <?php echo json_encode($cat_data, JSON_NUMERIC_CHECK); ?>
+            }]
+        });
+        pieChart.render();
+
+        // Initialize Line Graphic Trend Chart configuration
+        var trendChart = new CanvasJS.Chart("trendChartContainer", {
+            animationEnabled: true,
+            title: { text: "Expense Spending Trends" },
+            axisY: { title: "Amount in TZS" },
+            data: [{
+                type: "line",
+                yValueFormatString: "TZS #,##0.00",
+                dataPoints: <?php echo json_encode($trend_data, JSON_NUMERIC_CHECK); ?>
+            }]
+        });
+        trendChart.render();
+    }
+    </script>
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <div class="header">
+            <h2>Habari, <?php echo htmlspecialchars($_SESSION['username']); ?>! 👋</h2>
+            <a href="logout.php">Logout</a>
+        </div>
+
+        <div class="panel" style="margin-bottom:20px;">
+            <form method="GET" action="index.php" style="display:flex; gap:15px; align-items:center;">
+                <label style="font-weight:bold;">Generate Reports Scope:</label>
+                <select name="report_filter" class="form-control" style="width:200px;">
+                    <option value="all" <?php if($filter_type=='all') echo 'selected'; ?>>All-Time Ledger</option>
+                    <option value="daily" <?php if($filter_type=='daily') echo 'selected'; ?>>Daily Summary</option>
+                    <option value="weekly" <?php if($filter_type=='weekly') echo 'selected'; ?>>Weekly Summary</option>
+                    <option value="monthly" <?php if($filter_type=='monthly') echo 'selected'; ?>>Monthly Summary</option>
+                </select>
+                <button type="submit" class="btn" style="width:120px;">Filter</button>
+            </form>
+        </div>
+
+        <div class="stats-grid">
+            <div class="card income">
+                <h3>Total Income</h3>
+                <p>TZS <?php echo number_format($total_income, 2); ?></p>
+            </div>
+            <div class="card expense">
+                <h3>Total Expenses</h3>
+                <p>TZS <?php echo number_format($total_expenses, 2); ?></p>
+            </div>
+            <div class="card balance">
+                <h3>Remaining Balance</h3>
+                <p>TZS <?php echo number_format($remaining_balance, 2); ?></p>
+            </div>
+        </div>
+
+        <div class="main-grid" style="margin-bottom:30px;">
+            <div class="panel"><div id="pieChartContainer" style="height: 300px; width: 100%;"></div></div>
+            <div class="panel"><div id="trendChartContainer" style="height: 300px; width: 100%;"></div></div>
+        </div>
+
+        <div class="main-grid">
+            <div class="panel">
+                <h3>Add Income</h3>
+                <form action="index.php" method="POST">
+                    <div class="form-group">
+                        <label>Income Source</label>
+                        <input type="text" name="source" class="form-control" placeholder="Salary, Business..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount (TZS)</label>
+                        <input type="number" step="0.01" name="amount" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Date</label>
+                        <input type="date" name="date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                    </div>
+                    <button type="submit" name="add_income" class="btn" style="background:#2ecc71;">Record Income</button>
+                </form>
+            </div>
+
+            <div class="panel">
+                <h3>Add Expense</h3>
+                <form action="index.php" method="POST">
+                    <div class="form-group">
+                        <label>Expense Title</label>
+                        <input type="text" name="title" class="form-control" placeholder="Grocery, Bus, Rent..." required>
+                    </div>
+                    <div class="form-group">
+                        <label>Category</label>
+                        <select name="category" class="form-control" required>
+                            <option value="Food">Food</option>
+                            <option value="Transport">Transport</option>
+                            <option value="Rent">Rent</option>
+                            <option value="Entertainment">Entertainment</option>
+                            <option value="Education">Education</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount (TZS)</label>
+                        <input type="number" step="0.01" name="amount" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Date</label>
+                        <input type="date" name="date" class="form-control" value="<?php echo date('Y-m-d'); ?>" required>
+                    </div>
+                    <button type="submit" name="add_expense" class="btn" style="background:#e74c3c;">Record Expense</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="panel" style="margin-top: 20px;">
+            <h3>Expense Logs (Edit/Delete Management)</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Title</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php
+                    // Display entries matching the active selected date scope parameter
+                    $expenses_list = $conn->query("SELECT * FROM expenses WHERE user_id=$user_id" . $filter_query . " ORDER BY date DESC");
+                    if($expenses_list->num_rows > 0) {
+                        while($item = $expenses_list->fetch_assoc()) {
+                            echo "<tr>
+                                    <td>{$item['date']}</td>
+                                    <td>" . htmlspecialchars($item['title']) . "</td>
+                                    <td>{$item['category']}</td>
+                                    <td>TZS " . number_format($item['amount'], 2) . "</td>
+                                    <td><a href='index.php?delete_expense={$item['id']}' class='btn-danger' onclick='return confirm(\"Are you sure?\")'>Delete</a></td>
+                                  </tr>";
+                        }
+                    } else {
+                        echo "<tr><td colspan='5' style='text-align:center;'>No expenses logged for this filter scope selection.</td></tr>";
+                    }
+                    ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
